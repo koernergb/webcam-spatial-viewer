@@ -1,0 +1,179 @@
+:root {
+  color-scheme: dark;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  line-height: 1.4;
+  font-weight: 400;
+  color: #e7ebf2;
+  background: #0e0f12;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 1fr minmax(280px, 340px);
+  height: 100%;
+}
+
+.viewport {
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.viewport canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.panel {
+  overflow: auto;
+  padding: 1.1rem 1.15rem 1.4rem;
+  background: #14171d;
+  border-left: 1px solid #2a3140;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8ea0b8;
+}
+
+h1 {
+  margin: 0.15rem 0 0.4rem;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+
+.lede,
+.hint,
+.legend p {
+  color: #b7c0cc;
+  font-size: 0.85rem;
+}
+
+h2 {
+  margin: 0 0 0.55rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8ea0b8;
+}
+
+section {
+  margin-top: 1.05rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #262d3a;
+}
+
+.row,
+.check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.35rem 0;
+}
+
+.check {
+  justify-content: flex-start;
+}
+
+select,
+button {
+  background: #1c222c;
+  border: 1px solid #334057;
+  border-radius: 6px;
+  padding: 0.35rem 0.55rem;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover,
+select:hover {
+  border-color: #4b6280;
+}
+
+.ghost {
+  width: 100%;
+  margin-top: 0.65rem;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+.stats {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.stats div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+}
+
+dt {
+  color: #8ea0b8;
+}
+
+dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.swatch.red {
+  color: #ff6b6b;
+}
+
+.swatch.green {
+  color: #7dff9a;
+}
+
+@media (max-width: 860px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(48vh, 1fr) auto;
+  }
+
+  .panel {
+    border-left: 0;
+    border-top: 1px solid #2a3140;
+    max-height: 52vh;
+  }
+}
