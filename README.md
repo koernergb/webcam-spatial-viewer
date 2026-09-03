@@ -2,7 +2,14 @@
 
 Browser spatial viewer: webcam or image → on-device depth → inspectable point cloud and mesh.
 
-The project is at **Milestone 0 — Geometry sandbox**. There is no depth model and no webcam yet. The app back-projects synthetic depth so we can lock camera and Three.js conventions before inference.
+The project is at **Milestone 2 — Colored point cloud**. Open a local image or
+fixture to run Depth Anything V2 Small locally, inspect the depth result, and
+orbit an RGB-aligned 2.5D point cloud. Reconstruction controls update from the
+cached depth tensor without rerunning the model. The geometry sandbox remains
+available from the sidebar.
+
+There is no webcam or mesh yet. Depth and reconstructed coordinates are relative,
+not metric measurements.
 
 Coordinate conventions: [`src/geometry/README.md`](src/geometry/README.md).
 
@@ -15,6 +22,18 @@ npm run dev
 ```
 
 Open the printed local URL. Drag to orbit, scroll to zoom.
+
+## Milestone 1 checks
+
+1. Use the bundled Person, Indoor layers, Glass + reflections, and Thin details fixtures.
+2. Confirm the RGB and depth output have matching orientation.
+3. Confirm near/far ordering is visually sensible and record the output polarity.
+4. Compare robust 2–98% normalization with fixed raw min/max.
+5. Repeat inference while watching browser memory for growth.
+
+The validation fixtures are AI-generated specifically for testing depth ordering,
+orientation, reflective/transparent failure behavior, and preservation of thin
+structures. They are not model training data or quality benchmarks.
 
 ## Milestone 0 checks
 

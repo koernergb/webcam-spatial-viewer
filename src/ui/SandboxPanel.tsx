@@ -13,11 +13,13 @@ export function SandboxPanel({
   pointCount,
   onInspectView,
   onSourceCamera,
+  onDepthLab,
 }: {
   intrinsics: CameraIntrinsics;
   pointCount: number;
   onInspectView: () => void;
   onSourceCamera: () => void;
+  onDepthLab: () => void;
 }) {
   const fovXDegrees = useViewerStore((s) => s.fovXDegrees);
   const syntheticScene = useViewerStore((s) => s.syntheticScene);
@@ -45,6 +47,7 @@ export function SandboxPanel({
           relative scene units.
         </p>
       </header>
+      <button type="button" className="ghost" onClick={onDepthLab}>Frozen-image depth lab</button>
 
       <section>
         <h2>Scene</h2>

@@ -1,11 +1,13 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { SpatialViewport } from "../rendering/SpatialViewport";
 import { useViewerStore } from "../state/viewerStore";
 import { SandboxPanel } from "../ui/SandboxPanel";
 import { ViewportHost } from "../ui/ViewportHost";
+import { DepthLab } from "../ui/DepthLab";
 import { buildSandboxCloud } from "./buildSandboxCloud";
 
 export default function App() {
+  const [screen, setScreen] = useState<"depth" | "sandbox">("depth");
   const viewportRef = useRef<SpatialViewport | null>(null);
   const fovXDegrees = useViewerStore((s) => s.fovXDegrees);
   const syntheticScene = useViewerStore((s) => s.syntheticScene);
@@ -15,6 +17,8 @@ export default function App() {
     [fovXDegrees, syntheticScene],
   );
 
+  if (screen === "depth") return <DepthLab onSandbox={() => setScreen("sandbox")} />;
+
   return (
     <div className="app">
       <ViewportHost viewportRef={viewportRef} />
@@ -23,6 +27,7 @@ export default function App() {
         pointCount={reconstruction.buffers.validVertexCount}
         onInspectView={() => viewportRef.current?.resetToInspectView()}
         onSourceCamera={() => viewportRef.current?.resetToSourceCamera()}
+        onDepthLab={() => setScreen("depth")}
       />
     </div>
   );
