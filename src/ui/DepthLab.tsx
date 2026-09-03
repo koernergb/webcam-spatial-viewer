@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { loadImageFile } from "../capture/ImageSource";
+import { LatestFrameScheduler, type SchedulerState } from "../capture/LatestFrameScheduler";
+import { listCameras, startCamera, stopCamera, type CameraOption } from "../capture/WebcamSource";
 import { colorizeDepth, type Colormap } from "../depth/colormap";
 import type { DepthResult } from "../depth/DepthModelAdapter";
 import { normalizeDepth } from "../depth/normalization";
@@ -15,6 +17,9 @@ import { ReconstructionViewport } from "./ReconstructionViewport";
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 type Preset = "fast" | "balanced" | "inspect";
 interface Selection { u: number; v: number; raw: number; depth: number; rgb: [number, number, number]; xyz: Vec3; }
+interface LiveFrame { bitmap: ImageBitmap; capturedAt: number; }
+interface LiveResult { result: DepthResult; rgb: Uint8Array; }
+interface PerformanceStats { inferenceFps: number; renderFps: number; resultAgeMs: number; }
 
 const FIXTURES = [
   { label: "Person", file: "validation-person.png" },
@@ -48,6 +53,12 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
   const rgbCanvas = useRef<HTMLCanvasElement | null>(null);
   const depthCanvas = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<SpatialViewport | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const schedulerRef = useRef<LatestFrameScheduler<LiveFrame, LiveResult> | null>(null);
+  const frameCallbackRef = useRef<number | null>(null);
+  const frozenRef = useRef(false);
+  const inferenceCompletions = useRef<number[]>([]);
   const [revision, setRevision] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
   const [progress, setProgress] = useState(0);
@@ -61,6 +72,13 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
   const [depthScale, setDepthScale] = useState(1);
   const [pointSize, setPointSize] = useState(2);
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [cameras, setCameras] = useState<CameraOption[]>([]);
+  const [cameraId, setCameraId] = useState("");
+  const [live, setLive] = useState(false);
+  const [frozen, setFrozen] = useState(false);
+  const [mirror, setMirror] = useState(true);
+  const [queue, setQueue] = useState<SchedulerState>({ busy: false, pending: false });
+  const [performanceStats, setPerformanceStats] = useState<PerformanceStats>({ inferenceFps: 0, renderFps: 0, resultAgeMs: 0 });
   const result = resultRef.current;
 
   const reconstruction = useMemo(() => {
@@ -71,7 +89,25 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
     return { intrinsics, depth, buffers };
   }, [depthScale, far, fov, near, preset, result, revision]);
 
-  useEffect(() => () => { bitmap.current?.close(); void adapter.current?.dispose(); }, []);
+  useEffect(() => () => {
+    schedulerRef.current?.stop(); stopCamera(streamRef.current); bitmap.current?.close(); void adapter.current?.dispose();
+    if (frameCallbackRef.current !== null && videoRef.current?.cancelVideoFrameCallback) videoRef.current.cancelVideoFrameCallback(frameCallbackRef.current);
+  }, []);
+  useEffect(() => {
+    let frames = 0; let previous = performance.now(); let raf = 0;
+    const tick = () => {
+      const now = performance.now();
+      frames += 1;
+      if (now - previous >= 1000) {
+        const recent = inferenceCompletions.current.filter((time) => now - time < 1000);
+        inferenceCompletions.current = recent;
+        setPerformanceStats((stats) => ({ ...stats, renderFps: frames * 1000 / (now - previous), inferenceFps: recent.length }));
+        frames = 0; previous = now;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick); return () => cancelAnimationFrame(raf);
+  }, []);
   useEffect(() => {
     if (!result || !depthCanvas.current) return;
     const normalized = normalizeDepth(result.values, fixedRange ? { low: result.min, high: result.max } : undefined);
@@ -86,16 +122,23 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
     const next = new OnnxDepthAdapter();
     await next.load(setProgress); adapter.current = next; setStatus("ready"); return next;
   }
+  function acceptResult(result: DepthResult, rgb: Uint8Array, capturedAt?: number) {
+    resultRef.current = result; rgbRef.current = rgb;
+    inferenceCompletions.current.push(performance.now());
+    if (capturedAt !== undefined) setPerformanceStats((stats) => ({ ...stats, resultAgeMs: performance.now() - capturedAt }));
+    setRevision((value) => value + 1); setStatus("ready");
+  }
   async function openFile(file: File) {
+    stopLive();
     setError(""); setSelection(null);
     try {
       bitmap.current?.close(); bitmap.current = await loadImageFile(file);
       const model = await ensureModel(); setStatus("running");
       const result = await model.infer(bitmap.current);
-      resultRef.current = result; rgbRef.current = sampleRgb(bitmap.current, result.width, result.height);
+      const rgb = sampleRgb(bitmap.current, result.width, result.height);
       const canvas = rgbCanvas.current;
       if (canvas) { canvas.width = result.width; canvas.height = result.height; canvas.getContext("2d")?.drawImage(bitmap.current, 0, 0, result.width, result.height); }
-      setRevision((value) => value + 1); setStatus("ready");
+      acceptResult(result, rgb);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setStatus("error"); }
   }
   async function openExample(file: string) {
@@ -103,10 +146,72 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
     if (!response.ok) throw new Error(`Example image returned HTTP ${response.status}`);
     await openFile(new File([await response.blob()], file, { type: "image/png" }));
   }
+  function scheduleVideoFrame() {
+    const video = videoRef.current;
+    if (!video || !streamRef.current) return;
+    const onFrame = async () => {
+      if (!frozenRef.current && video.videoWidth > 0) {
+        const canvas = rgbCanvas.current;
+        if (canvas) {
+          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) { canvas.width = video.videoWidth; canvas.height = video.videoHeight; }
+          canvas.getContext("2d")?.drawImage(video, 0, 0);
+        }
+        try {
+          const frame = await createImageBitmap(video);
+          const scheduler = schedulerRef.current;
+          if (scheduler) scheduler.submit({ bitmap: frame, capturedAt: performance.now() });
+          else frame.close();
+        } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      }
+      scheduleVideoFrame();
+    };
+    frameCallbackRef.current = video.requestVideoFrameCallback
+      ? video.requestVideoFrameCallback(() => { void onFrame(); })
+      : requestAnimationFrame(() => { void onFrame(); });
+  }
+  function stopLive() {
+    const video = videoRef.current;
+    if (frameCallbackRef.current !== null) {
+      if (video?.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frameCallbackRef.current);
+      else cancelAnimationFrame(frameCallbackRef.current);
+    }
+    frameCallbackRef.current = null; schedulerRef.current?.stop(); schedulerRef.current = null;
+    stopCamera(streamRef.current); streamRef.current = null;
+    if (video) video.srcObject = null;
+    frozenRef.current = false; setFrozen(false); setLive(false); setQueue({ busy: false, pending: false });
+  }
+  async function startLive(requestedCameraId = cameraId) {
+    setError(""); stopLive();
+    try {
+      const model = await ensureModel();
+      const stream = await startCamera(requestedCameraId || undefined); streamRef.current = stream;
+      const video = videoRef.current;
+      if (!video) throw new Error("Video preview is unavailable.");
+      video.srcObject = stream; await video.play();
+      const available = await listCameras(); setCameras(available);
+      const activeId = stream.getVideoTracks()[0]?.getSettings().deviceId;
+      if (activeId) setCameraId(activeId);
+      schedulerRef.current = new LatestFrameScheduler<LiveFrame, LiveResult>(
+        async (frame) => {
+          setStatus("running");
+          const result = await model.infer(frame.bitmap);
+          return { result, rgb: sampleRgb(frame.bitmap, result.width, result.height) };
+        },
+        ({ result, rgb }, frame) => { if (!frozenRef.current) acceptResult(result, rgb, frame.capturedAt); },
+        (frame) => frame.bitmap.close(), setQueue,
+        (cause) => { setError(cause instanceof Error ? cause.message : String(cause)); setStatus("error"); },
+      );
+      setLive(true); setPreset("fast"); scheduleVideoFrame();
+    } catch (cause) { stopLive(); setError(cause instanceof Error ? cause.message : String(cause)); setStatus("error"); }
+  }
+  function toggleFreeze() {
+    const next = !frozenRef.current; frozenRef.current = next; setFrozen(next); setPreset(next ? "inspect" : "fast");
+  }
   function pick(event: MouseEvent<HTMLCanvasElement>) {
     if (!result || !rgbRef.current || !reconstruction) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const u = Math.min(result.width - 1, Math.max(0, Math.floor((event.clientX - rect.left) / rect.width * result.width)));
+    let u = Math.min(result.width - 1, Math.max(0, Math.floor((event.clientX - rect.left) / rect.width * result.width)));
+    if (event.currentTarget === rgbCanvas.current && live && mirror) u = result.width - 1 - u;
     const v = Math.min(result.height - 1, Math.max(0, Math.floor((event.clientY - rect.top) / rect.height * result.height)));
     const index = v * result.width + u; const colorIndex = index * 3;
     const depth = reconstruction.depth[index];
@@ -117,17 +222,23 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
   return <div className="depth-lab milestone-two">
     <main className="spatial-stage">
       <div className="source-strip">
-        <figure><canvas ref={rgbCanvas} onClick={pick} /><figcaption>RGB source · click to inspect</figcaption></figure>
+        <figure><canvas className={live && mirror ? "mirrored" : ""} ref={rgbCanvas} onClick={pick} /><figcaption>RGB source · click to inspect</figcaption></figure>
         <figure><canvas ref={depthCanvas} onClick={pick} /><figcaption>Relative proximity · {map}</figcaption></figure>
       </div>
       {reconstruction ? <ReconstructionViewport {...reconstruction} pointSize={pointSize} viewportRef={viewportRef} /> : <div className="empty-state">Choose a validation image to build its point cloud.</div>}
+      <video className="capture-video" ref={videoRef} muted playsInline />
     </main>
     <aside className="panel">
-      <p className="eyebrow">Milestone 2</p><h1>Colored point cloud</h1>
-      <p className="lede">Frozen image → relative depth → RGB-aligned 2.5D geometry. Processing stays on-device.</p>
+      <p className="eyebrow">Milestone 3</p><h1>Live spatial viewer</h1>
+      <p className="lede">Image or webcam → relative depth → RGB-aligned 2.5D geometry. Processing stays on-device.</p>
       <section><h2>Source</h2>
         <label className="file-button">Open image<input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openFile(file); }} /></label>
         <div className="fixture-grid">{FIXTURES.map((fixture) => <button key={fixture.file} type="button" onClick={() => void openExample(fixture.file)}>{fixture.label}</button>)}</div>
+        <div className="camera-controls">
+          {cameras.length > 0 && <label className="row"><span>Camera</span><select value={cameraId} onChange={(event) => { setCameraId(event.target.value); if (live) void startLive(event.target.value); }}>{cameras.map((camera) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label>}
+          <div className="actions"><button type="button" onClick={() => live ? stopLive() : void startLive()}>{live ? "Stop camera" : "Use webcam"}</button><button type="button" disabled={!live} onClick={toggleFreeze}>{frozen ? "Resume" : "Freeze"}</button></div>
+          <label className="check"><input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} />Mirror RGB preview only</label>
+        </div>
       </section>
       <section><h2>Reconstruction</h2>
         <div className="preset-row">{(["fast", "balanced", "inspect"] as const).map((item) => <button className={preset === item ? "active" : ""} key={item} onClick={() => setPreset(item)}>{item}</button>)}</div>
@@ -141,10 +252,11 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
       </section>
       <section><h2>Depth display</h2><label className="row"><span>Colormap</span><select value={map} onChange={(e) => setMap(e.target.value as Colormap)}><option value="grayscale">Grayscale</option><option value="turbo">Turbo</option><option value="inferno">Inferno</option></select></label><label className="check"><input type="checkbox" checked={fixedRange} onChange={(e) => setFixedRange(e.target.checked)} />Fixed raw min/max</label></section>
       <section><h2>Inspector</h2><dl className="stats">
-        <div><dt>Status</dt><dd>{status}{status === "loading" ? ` ${Math.round(progress * 100)}%` : ""}</dd></div><div><dt>Backend</dt><dd>{result?.backend ?? "—"}</dd></div><div><dt>Tensor</dt><dd>{result ? `${result.width} × ${result.height}` : "—"}</dd></div><div><dt>Points</dt><dd>{reconstruction?.buffers.validVertexCount.toLocaleString() ?? "—"}</dd></div>
+        <div><dt>Status</dt><dd>{frozen ? "frozen" : status}{status === "loading" ? ` ${Math.round(progress * 100)}%` : ""}</dd></div><div><dt>Backend</dt><dd>{result?.backend ?? "—"}</dd></div><div><dt>Tensor</dt><dd>{result ? `${result.width} × ${result.height}` : "—"}</dd></div><div><dt>Points</dt><dd>{reconstruction?.buffers.validVertexCount.toLocaleString() ?? "—"}</dd></div>
         <div><dt>Pixel</dt><dd>{selection ? `${selection.u}, ${selection.v}` : "—"}</dd></div><div><dt>RGB</dt><dd>{selection?.rgb.join(", ") ?? "—"}</dd></div><div><dt>Raw proximity</dt><dd>{selection?.raw.toFixed(4) ?? "—"}</dd></div><div><dt>Relative depth</dt><dd>{selection?.depth.toFixed(4) ?? "—"}</dd></div><div><dt>XYZ</dt><dd>{selection ? `${selection.xyz.x.toFixed(2)}, ${selection.xyz.y.toFixed(2)}, ${selection.xyz.z.toFixed(2)}` : "—"}</dd></div>
       </dl>{error && <p className="error">{error}</p>}</section>
       <button className="ghost" onClick={onSandbox}>Geometry sandbox</button><p className="hint">Units are relative scene units, not meters. Reconstruction controls reuse the existing depth result and never rerun inference.</p>
     </aside>
+    <footer className="performance-strip"><span>Inference <strong>{performanceStats.inferenceFps.toFixed(1)} FPS</strong></span><span>Render <strong>{performanceStats.renderFps.toFixed(0)} FPS</strong></span><span>Result age <strong>{performanceStats.resultAgeMs.toFixed(0)} ms</strong></span><span>Queue <strong>{queue.busy ? (queue.pending ? "busy + latest" : "busy") : "idle"}</strong></span><span>{result ? `${result.width} × ${result.height}` : "no result"}</span></footer>
   </div>;
 }

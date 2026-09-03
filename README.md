@@ -2,14 +2,14 @@
 
 Browser spatial viewer: webcam or image → on-device depth → inspectable point cloud and mesh.
 
-The project is at **Milestone 2 — Colored point cloud**. Open a local image or
-fixture to run Depth Anything V2 Small locally, inspect the depth result, and
-orbit an RGB-aligned 2.5D point cloud. Reconstruction controls update from the
-cached depth tensor without rerunning the model. The geometry sandbox remains
-available from the sidebar.
+The project is at **Milestone 3 — Live webcam pipeline**. Use a local image,
+fixture, or webcam to run Depth Anything V2 Small locally, inspect the depth
+result, and orbit an RGB-aligned 2.5D point cloud. Live inference uses a
+latest-frame-wins scheduler so work cannot queue without bound. Freeze switches
+to full point density for inspection.
 
-There is no webcam or mesh yet. Depth and reconstructed coordinates are relative,
-not metric measurements.
+There is no mesh yet. Depth and reconstructed coordinates are relative, not
+metric measurements.
 
 Coordinate conventions: [`src/geometry/README.md`](src/geometry/README.md).
 
