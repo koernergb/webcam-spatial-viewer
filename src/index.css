@@ -51,8 +51,10 @@ select {
 .file-button { display: block; cursor: pointer; text-align: center; background: #26354a; border: 1px solid #49698f; border-radius: 6px; padding: .55rem; }
 .file-button input { display: none; }
 .fixture-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; margin-top: .55rem; }
-.fixture-grid button { min-height: 2.8rem; font-size: .8rem; }
+.fixture-grid button { min-height: 3.4rem; font-size: .8rem; display: grid; gap: .1rem; place-content: center; }
+.fixture-grid small { color: #8ea0b8; font-size: .65rem; }
 .preset-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: .35rem; margin-bottom: .7rem; }
+.export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
 .preset-row button { text-transform: capitalize; font-size: .78rem; }
 .preset-row button.active { background: #34577d; border-color: #6a9bd1; }
 .range-label { display: grid; gap: .15rem; margin-top: .55rem; font-size: .8rem; }

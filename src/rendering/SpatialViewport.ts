@@ -7,6 +7,7 @@ import {
 import type { CameraIntrinsics, ReconstructionBuffers } from "../geometry/types";
 import { SourceCameraFrustum } from "./CameraFrustum";
 import { PointCloudRenderer } from "./PointCloudRenderer";
+import { MeshRenderer, type SpatialRenderMode } from "./MeshRenderer";
 
 const INSPECT_FOV = 50;
 const INSPECT_POSITION = new THREE.Vector3(1.35, 0.9, 1.55);
@@ -19,6 +20,7 @@ export class SpatialViewport {
   readonly controls: OrbitControls;
 
   private readonly pointCloud: PointCloudRenderer;
+  private readonly mesh: MeshRenderer;
   private readonly axes: THREE.AxesHelper;
   private readonly grid: THREE.GridHelper;
   private readonly lookArrow: THREE.ArrowHelper;
@@ -46,6 +48,9 @@ export class SpatialViewport {
 
     this.pointCloud = new PointCloudRenderer();
     this.scene.add(this.pointCloud.points);
+    this.mesh = new MeshRenderer();
+    this.scene.add(this.mesh.group);
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x334466, 2.2));
 
     this.axes = new THREE.AxesHelper(0.45);
     this.scene.add(this.axes);
@@ -78,6 +83,20 @@ export class SpatialViewport {
 
   setPointCloud(buffers: ReconstructionBuffers): void {
     this.pointCloud.setFromBuffers(buffers);
+  }
+
+  setMesh(buffers: ReconstructionBuffers): void {
+    this.mesh.setFromBuffers(buffers);
+  }
+
+  setRenderMode(mode: SpatialRenderMode): void {
+    this.pointCloud.points.visible = mode === "points";
+    this.mesh.setMode(mode);
+  }
+
+  capturePng(): Promise<Blob> {
+    this.renderer.render(this.scene, this.viewCamera);
+    return new Promise((resolve, reject) => this.renderer.domElement.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Could not capture viewport.")), "image/png"));
   }
 
   setSourceIntrinsics(intrinsics: CameraIntrinsics): void {
@@ -139,6 +158,7 @@ export class SpatialViewport {
     this.resizeObserver.disconnect();
     this.controls.dispose();
     this.pointCloud.dispose();
+    this.mesh.dispose();
     this.frustum.dispose();
     this.axes.geometry.dispose();
     this.grid.geometry.dispose();

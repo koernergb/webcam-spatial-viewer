@@ -20,4 +20,7 @@ export interface ReconstructionBuffers {
   indices?: Uint32Array;
   validVertexCount: number;
   validTriangleCount?: number;
+  candidateTriangleCount?: number;
+  rejectedTriangleCount?: number;
+  rejectedIndices?: Uint32Array;
 }

@@ -10,9 +10,14 @@ import { relativeProximityToDepth } from "../depth/reconstruction";
 import { backprojectToThree } from "../geometry/backproject";
 import { degreesToRadians, intrinsicsFromHorizontalFov } from "../geometry/camera";
 import { buildPointCloudFromDepth } from "../geometry/pointCloud";
+import { buildDepthMesh } from "../geometry/depthMesh";
 import type { Vec3 } from "../geometry/types";
 import type { SpatialViewport } from "../rendering/SpatialViewport";
+import type { SpatialRenderMode } from "../rendering/MeshRenderer";
 import { ReconstructionViewport } from "./ReconstructionViewport";
+import { downloadBlob } from "../export/download";
+import { serializeMeshGlb } from "../export/gltf";
+import { serializeMeshPly, serializePointCloudPly } from "../export/ply";
 
 type Status = "idle" | "loading" | "ready" | "running" | "error";
 type Preset = "fast" | "balanced" | "inspect";
@@ -22,10 +27,10 @@ interface LiveResult { result: DepthResult; rgb: Uint8Array; }
 interface PerformanceStats { inferenceFps: number; renderFps: number; resultAgeMs: number; }
 
 const FIXTURES = [
-  { label: "Person", file: "validation-person.png" },
-  { label: "Indoor layers", file: "validation-indoor.png" },
-  { label: "Glass + reflections", file: "validation-reflective.png" },
-  { label: "Thin details", file: "validation-thin-details.png" },
+  { label: "Person", note: "Check silhouette separation", file: "validation-person.png" },
+  { label: "Indoor layers", note: "Check near-to-far ordering", file: "validation-indoor.png" },
+  { label: "Glass + reflections", note: "Expected depth failures", file: "validation-reflective.png" },
+  { label: "Thin details", note: "Check hair, wires, leaves", file: "validation-thin-details.png" },
 ] as const;
 const STRIDES: Record<Preset, number> = { fast: 4, balanced: 2, inspect: 1 };
 
@@ -71,6 +76,9 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
   const [far, setFar] = useState(3.5);
   const [depthScale, setDepthScale] = useState(1);
   const [pointSize, setPointSize] = useState(2);
+  const [renderMode, setRenderMode] = useState<SpatialRenderMode>("points");
+  const [discontinuity, setDiscontinuity] = useState(0.16);
+  const [maxEdge, setMaxEdge] = useState(0.35);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [cameras, setCameras] = useState<CameraOption[]>([]);
   const [cameraId, setCameraId] = useState("");
@@ -79,6 +87,7 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
   const [mirror, setMirror] = useState(true);
   const [queue, setQueue] = useState<SchedulerState>({ busy: false, pending: false });
   const [performanceStats, setPerformanceStats] = useState<PerformanceStats>({ inferenceFps: 0, renderFps: 0, resultAgeMs: 0 });
+  const [exporting, setExporting] = useState(false);
   const result = resultRef.current;
 
   const reconstruction = useMemo(() => {
@@ -86,8 +95,9 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
     const intrinsics = intrinsicsFromHorizontalFov({ width: result.width, height: result.height, fovXRadians: degreesToRadians(fov) });
     const depth = relativeProximityToDepth(result.values, { near, far, scale: depthScale });
     const buffers = buildPointCloudFromDepth({ depth, width: result.width, height: result.height, colors: rgbRef.current, intrinsics, stride: STRIDES[preset] });
-    return { intrinsics, depth, buffers };
-  }, [depthScale, far, fov, near, preset, result, revision]);
+    const meshBuffers = buildDepthMesh({ depth, width: result.width, height: result.height, colors: rgbRef.current, intrinsics, options: { stride: STRIDES[preset], discontinuityThreshold: discontinuity, maxEdgeLength: maxEdge } });
+    return { intrinsics, depth, buffers, meshBuffers };
+  }, [depthScale, discontinuity, far, fov, maxEdge, near, preset, result, revision]);
 
   useEffect(() => () => {
     schedulerRef.current?.stop(); stopCamera(streamRef.current); bitmap.current?.close(); void adapter.current?.dispose();
@@ -98,10 +108,16 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
     const tick = () => {
       const now = performance.now();
       frames += 1;
-      if (now - previous >= 1000) {
+      const elapsed = now - previous;
+      if (Number.isFinite(elapsed) && elapsed >= 1000) {
         const recent = inferenceCompletions.current.filter((time) => now - time < 1000);
         inferenceCompletions.current = recent;
-        setPerformanceStats((stats) => ({ ...stats, renderFps: frames * 1000 / (now - previous), inferenceFps: recent.length }));
+        const renderFps = frames * 1000 / elapsed;
+        setPerformanceStats((stats) => ({
+          ...stats,
+          renderFps: Number.isFinite(renderFps) ? renderFps : 0,
+          inferenceFps: recent.length,
+        }));
         frames = 0; previous = now;
       }
       raf = requestAnimationFrame(tick);
@@ -217,7 +233,25 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
     const depth = reconstruction.depth[index];
     setSelection({ u, v, raw: result.values[index], depth, rgb: [rgbRef.current[colorIndex], rgbRef.current[colorIndex + 1], rgbRef.current[colorIndex + 2]], xyz: backprojectToThree(u, v, depth, reconstruction.intrinsics) });
   }
-  function resetReconstruction() { setPreset("balanced"); setFov(60); setNear(0.7); setFar(3.5); setDepthScale(1); setPointSize(2); setSelection(null); }
+  function resetReconstruction() { setPreset("balanced"); setFov(60); setNear(0.7); setFar(3.5); setDepthScale(1); setPointSize(2); setRenderMode("points"); setDiscontinuity(0.16); setMaxEdge(0.35); setSelection(null); }
+  function exportPly(kind: "points" | "mesh") {
+    if (!reconstruction) return;
+    const value = kind === "points" ? serializePointCloudPly(reconstruction.buffers) : serializeMeshPly(reconstruction.meshBuffers);
+    downloadBlob(new Blob([value], { type: "application/octet-stream" }), `parallax-${kind}.ply`);
+  }
+  async function exportGlb() {
+    if (!reconstruction) return;
+    setExporting(true);
+    try { downloadBlob(new Blob([await serializeMeshGlb(reconstruction.meshBuffers)], { type: "model/gltf-binary" }), "parallax-mesh.glb"); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setExporting(false); }
+  }
+  async function saveScreenshot() {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    try { downloadBlob(await viewport.capturePng(), "parallax-viewport.png"); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  }
 
   return <div className="depth-lab milestone-two">
     <main className="spatial-stage">
@@ -225,15 +259,15 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
         <figure><canvas className={live && mirror ? "mirrored" : ""} ref={rgbCanvas} onClick={pick} /><figcaption>RGB source · click to inspect</figcaption></figure>
         <figure><canvas ref={depthCanvas} onClick={pick} /><figcaption>Relative proximity · {map}</figcaption></figure>
       </div>
-      {reconstruction ? <ReconstructionViewport {...reconstruction} pointSize={pointSize} viewportRef={viewportRef} /> : <div className="empty-state">Choose a validation image to build its point cloud.</div>}
+      {reconstruction ? <ReconstructionViewport {...reconstruction} pointSize={pointSize} mode={renderMode} viewportRef={viewportRef} /> : <div className="empty-state">Choose a validation image to build its point cloud.</div>}
       <video className="capture-video" ref={videoRef} muted playsInline />
     </main>
     <aside className="panel">
-      <p className="eyebrow">Milestone 3</p><h1>Live spatial viewer</h1>
+      <p className="eyebrow">v1</p><h1>Depth-aware spatial viewer</h1>
       <p className="lede">Image or webcam → relative depth → RGB-aligned 2.5D geometry. Processing stays on-device.</p>
       <section><h2>Source</h2>
         <label className="file-button">Open image<input type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openFile(file); }} /></label>
-        <div className="fixture-grid">{FIXTURES.map((fixture) => <button key={fixture.file} type="button" onClick={() => void openExample(fixture.file)}>{fixture.label}</button>)}</div>
+        <div className="fixture-grid">{FIXTURES.map((fixture) => <button key={fixture.file} type="button" onClick={() => void openExample(fixture.file)}><span>{fixture.label}</span><small>{fixture.note}</small></button>)}</div>
         <div className="camera-controls">
           {cameras.length > 0 && <label className="row"><span>Camera</span><select value={cameraId} onChange={(event) => { setCameraId(event.target.value); if (live) void startLive(event.target.value); }}>{cameras.map((camera) => <option key={camera.deviceId} value={camera.deviceId}>{camera.label}</option>)}</select></label>}
           <div className="actions"><button type="button" onClick={() => live ? stopLive() : void startLive()}>{live ? "Stop camera" : "Use webcam"}</button><button type="button" disabled={!live} onClick={toggleFreeze}>{frozen ? "Resume" : "Freeze"}</button></div>
@@ -242,17 +276,22 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
       </section>
       <section><h2>Reconstruction</h2>
         <div className="preset-row">{(["fast", "balanced", "inspect"] as const).map((item) => <button className={preset === item ? "active" : ""} key={item} onClick={() => setPreset(item)}>{item}</button>)}</div>
+        <label className="row"><span>Render mode</span><select value={renderMode} onChange={(event) => setRenderMode(event.target.value as SpatialRenderMode)}><option value="points">Points</option><option value="solid">Solid mesh</option><option value="wireframe">Wireframe</option><option value="normals">Normals</option><option value="rejected">Rejected triangles</option></select></label>
         <label className="range-label"><span>Horizontal FOV <strong>{fov}°</strong></span><input type="range" min="25" max="110" value={fov} onChange={(e) => setFov(Number(e.target.value))} /></label>
         <label className="range-label"><span>Depth scale <strong>{depthScale.toFixed(1)}×</strong></span><input type="range" min="0.2" max="3" step="0.1" value={depthScale} onChange={(e) => setDepthScale(Number(e.target.value))} /></label>
         <label className="range-label"><span>Near depth <strong>{near.toFixed(1)}</strong></span><input type="range" min="0.1" max="2" step="0.1" value={near} onChange={(e) => setNear(Math.min(Number(e.target.value), far - 0.1))} /></label>
         <label className="range-label"><span>Far depth <strong>{far.toFixed(1)}</strong></span><input type="range" min="1" max="8" step="0.1" value={far} onChange={(e) => setFar(Math.max(Number(e.target.value), near + 0.1))} /></label>
         <label className="range-label"><span>Point size <strong>{pointSize}px</strong></span><input type="range" min="1" max="6" value={pointSize} onChange={(e) => setPointSize(Number(e.target.value))} /></label>
+        <label className="range-label"><span>Depth discontinuity <strong>{discontinuity.toFixed(2)}</strong></span><input type="range" min="0.02" max="0.6" step="0.01" value={discontinuity} onChange={(e) => setDiscontinuity(Number(e.target.value))} /></label>
+        <label className="range-label"><span>Maximum edge <strong>{maxEdge.toFixed(2)}</strong></span><input type="range" min="0.02" max="1.5" step="0.01" value={maxEdge} onChange={(e) => setMaxEdge(Number(e.target.value))} /></label>
         <div className="actions"><button onClick={() => viewportRef.current?.resetToSourceCamera()}>Source camera</button><button onClick={() => viewportRef.current?.resetToInspectView()}>Inspect view</button></div>
         <button className="ghost" onClick={resetReconstruction}>Reset reconstruction</button>
       </section>
       <section><h2>Depth display</h2><label className="row"><span>Colormap</span><select value={map} onChange={(e) => setMap(e.target.value as Colormap)}><option value="grayscale">Grayscale</option><option value="turbo">Turbo</option><option value="inferno">Inferno</option></select></label><label className="check"><input type="checkbox" checked={fixedRange} onChange={(e) => setFixedRange(e.target.checked)} />Fixed raw min/max</label></section>
+      <section><h2>Export</h2><div className="export-grid"><button disabled={!reconstruction} onClick={() => exportPly("points")}>Point PLY</button><button disabled={!reconstruction} onClick={() => exportPly("mesh")}>Mesh PLY</button><button disabled={!reconstruction || exporting} onClick={() => void exportGlb()}>{exporting ? "Building GLB…" : "Mesh GLB"}</button><button disabled={!reconstruction} onClick={() => void saveScreenshot()}>Screenshot</button></div></section>
       <section><h2>Inspector</h2><dl className="stats">
         <div><dt>Status</dt><dd>{frozen ? "frozen" : status}{status === "loading" ? ` ${Math.round(progress * 100)}%` : ""}</dd></div><div><dt>Backend</dt><dd>{result?.backend ?? "—"}</dd></div><div><dt>Tensor</dt><dd>{result ? `${result.width} × ${result.height}` : "—"}</dd></div><div><dt>Points</dt><dd>{reconstruction?.buffers.validVertexCount.toLocaleString() ?? "—"}</dd></div>
+        <div><dt>Triangles</dt><dd>{reconstruction?.meshBuffers.validTriangleCount?.toLocaleString() ?? "—"}</dd></div><div><dt>Rejected</dt><dd>{reconstruction ? `${reconstruction.meshBuffers.rejectedTriangleCount?.toLocaleString()} (${((reconstruction.meshBuffers.rejectedTriangleCount ?? 0) / Math.max(reconstruction.meshBuffers.candidateTriangleCount ?? 1, 1) * 100).toFixed(1)}%)` : "—"}</dd></div>
         <div><dt>Pixel</dt><dd>{selection ? `${selection.u}, ${selection.v}` : "—"}</dd></div><div><dt>RGB</dt><dd>{selection?.rgb.join(", ") ?? "—"}</dd></div><div><dt>Raw proximity</dt><dd>{selection?.raw.toFixed(4) ?? "—"}</dd></div><div><dt>Relative depth</dt><dd>{selection?.depth.toFixed(4) ?? "—"}</dd></div><div><dt>XYZ</dt><dd>{selection ? `${selection.xyz.x.toFixed(2)}, ${selection.xyz.y.toFixed(2)}, ${selection.xyz.z.toFixed(2)}` : "—"}</dd></div>
       </dl>{error && <p className="error">{error}</p>}</section>
       <button className="ghost" onClick={onSandbox}>Geometry sandbox</button><p className="hint">Units are relative scene units, not meters. Reconstruction controls reuse the existing depth result and never rerun inference.</p>
