@@ -2,9 +2,17 @@ import * as ort from "onnxruntime-web";
 import type { DepthModelAdapter, DepthResult } from "./DepthModelAdapter";
 
 const STILL_SHORT_SIDE = 518;
-export const LIVE_SHORT_SIDE = 280;
+export const LIVE_SHORT_SIDE = 196;
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
+
+export function modelInputDimensions(sourceWidth: number, sourceHeight: number, shortSide: number): { width: number; height: number } {
+  const scale = shortSide / Math.min(sourceWidth, sourceHeight);
+  return {
+    width: Math.max(14, Math.round((sourceWidth * scale) / 14) * 14),
+    height: Math.max(14, Math.round((sourceHeight * scale) / 14) * 14),
+  };
+}
 
 export class OnnxDepthAdapter implements DepthModelAdapter {
   private session: ort.InferenceSession | null = null;
@@ -46,9 +54,7 @@ export class OnnxDepthAdapter implements DepthModelAdapter {
     if (!this.session) throw new Error("Load the model before inference.");
     const sourceWidth = source.width;
     const sourceHeight = source.height;
-    const scale = this.shortSide / Math.min(sourceWidth, sourceHeight);
-    const width = Math.round((sourceWidth * scale) / 14) * 14;
-    const height = Math.round((sourceHeight * scale) / 14) * 14;
+    const { width, height } = modelInputDimensions(sourceWidth, sourceHeight, this.shortSide);
     if (this.canvas.width !== width) this.canvas.width = width;
     if (this.canvas.height !== height) this.canvas.height = height;
     const context = this.canvas.getContext("2d", { willReadFrequently: true });

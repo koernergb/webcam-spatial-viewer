@@ -21,7 +21,8 @@ inspection.
 
 ## What it does
 
-- Preserves source aspect ratio while running local `518px`-short-side inference.
+- Preserves source aspect ratio while running `518px` still-image inference and a
+  dedicated `196px` low-latency webcam path.
 - Displays aligned RGB and robust-normalized relative proximity.
 - Back-projects depth through an adjustable pinhole camera into Three.js space.
 - Renders points, solid mesh, wireframe, normal debug, and rejected triangles.
@@ -90,7 +91,10 @@ same default camera orientation.
 
 Live RGB follows the camera callback while depth updates at inference speed. If
 inference is busy, any older pending bitmap is released and replaced by the newest
-frame, keeping latency bounded. Stop/unmount releases media tracks, pending
+frame, keeping latency bounded. Webcam frames are downsampled once at capture,
+before bitmap creation, so full camera-resolution frames never enter the inference
+queue. Point mode also skips mesh construction until a mesh view or export needs
+it. Stop/unmount releases media tracks, pending
 bitmaps, Three.js resources, and the ONNX session.
 
 No frame upload endpoint exists. The only runtime assets fetched are local model,

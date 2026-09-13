@@ -5,7 +5,7 @@ import { listCameras, startCamera, stopCamera, type CameraOption } from "../capt
 import { colorizeDepth, type Colormap } from "../depth/colormap";
 import type { DepthResult } from "../depth/DepthModelAdapter";
 import { normalizeDepth } from "../depth/normalization";
-import { LIVE_SHORT_SIDE, OnnxDepthAdapter } from "../depth/OnnxDepthAdapter";
+import { LIVE_SHORT_SIDE, modelInputDimensions, OnnxDepthAdapter } from "../depth/OnnxDepthAdapter";
 import { relativeProximityToDepth } from "../depth/reconstruction";
 import { backprojectToThree } from "../geometry/backproject";
 import { degreesToRadians, intrinsicsFromHorizontalFov } from "../geometry/camera";
@@ -35,6 +35,7 @@ const FIXTURES = [
 const STRIDES: Record<Preset, number> = { fast: 4, balanced: 2, inspect: 1 };
 const LIVE_CAPTURE_INTERVAL_MS = 1000 / 15;
 const rgbSamplingCanvas = document.createElement("canvas");
+const liveCaptureCanvas = document.createElement("canvas");
 
 function sampleRgb(source: CanvasImageSource, width: number, height: number): Uint8Array {
   const canvas = rgbSamplingCanvas;
@@ -172,13 +173,17 @@ export function DepthLab({ onSandbox }: { onSandbox: () => void }) {
       const capturedAt = performance.now();
       if (!frozenRef.current && video.videoWidth > 0 && capturedAt - lastLiveCaptureAt.current >= LIVE_CAPTURE_INTERVAL_MS) {
         lastLiveCaptureAt.current = capturedAt;
+        const captureSize = modelInputDimensions(video.videoWidth, video.videoHeight, LIVE_SHORT_SIDE);
+        if (liveCaptureCanvas.width !== captureSize.width) liveCaptureCanvas.width = captureSize.width;
+        if (liveCaptureCanvas.height !== captureSize.height) liveCaptureCanvas.height = captureSize.height;
+        liveCaptureCanvas.getContext("2d")?.drawImage(video, 0, 0, captureSize.width, captureSize.height);
         const canvas = rgbCanvas.current;
         if (canvas) {
-          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) { canvas.width = video.videoWidth; canvas.height = video.videoHeight; }
-          canvas.getContext("2d")?.drawImage(video, 0, 0);
+          if (canvas.width !== captureSize.width || canvas.height !== captureSize.height) { canvas.width = captureSize.width; canvas.height = captureSize.height; }
+          canvas.getContext("2d")?.drawImage(liveCaptureCanvas, 0, 0);
         }
         try {
-          const frame = await createImageBitmap(video);
+          const frame = await createImageBitmap(liveCaptureCanvas);
           const scheduler = schedulerRef.current;
           if (scheduler) scheduler.submit({ bitmap: frame, capturedAt });
           else frame.close();
