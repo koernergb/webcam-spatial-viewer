@@ -1,15 +1,27 @@
 import * as ort from "onnxruntime-web";
 import type { DepthModelAdapter, DepthResult } from "./DepthModelAdapter";
 
-const SHORT_SIDE = 518;
+const STILL_SHORT_SIDE = 518;
+export const LIVE_SHORT_SIDE = 280;
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];
 
 export class OnnxDepthAdapter implements DepthModelAdapter {
   private session: ort.InferenceSession | null = null;
   private backend: "webgpu" | "wasm" = "wasm";
+  private shortSide = STILL_SHORT_SIDE;
+  private readonly canvas = document.createElement("canvas");
+  private input = new Float32Array();
 
   constructor(private readonly modelUrl = "/models/depth-anything-v2-small-q4f16.onnx") {}
+
+  setInputShortSide(shortSide: number): void {
+    this.shortSide = Math.max(140, Math.round(shortSide / 14) * 14);
+  }
+
+  useStillQuality(): void {
+    this.shortSide = STILL_SHORT_SIDE;
+  }
 
   async load(onProgress?: (progress: number) => void): Promise<void> {
     onProgress?.(0.05);
@@ -32,20 +44,20 @@ export class OnnxDepthAdapter implements DepthModelAdapter {
 
   async infer(source: ImageBitmap): Promise<DepthResult> {
     if (!this.session) throw new Error("Load the model before inference.");
-    const canvas = document.createElement("canvas");
     const sourceWidth = source.width;
     const sourceHeight = source.height;
-    const scale = SHORT_SIDE / Math.min(sourceWidth, sourceHeight);
+    const scale = this.shortSide / Math.min(sourceWidth, sourceHeight);
     const width = Math.round((sourceWidth * scale) / 14) * 14;
     const height = Math.round((sourceHeight * scale) / 14) * 14;
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (this.canvas.width !== width) this.canvas.width = width;
+    if (this.canvas.height !== height) this.canvas.height = height;
+    const context = this.canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("Canvas 2D is unavailable.");
     context.drawImage(source, 0, 0, width, height);
     const rgba = context.getImageData(0, 0, width, height).data;
     const planeSize = width * height;
-    const input = new Float32Array(3 * planeSize);
+    if (this.input.length !== 3 * planeSize) this.input = new Float32Array(3 * planeSize);
+    const input = this.input;
     for (let pixel = 0; pixel < planeSize; pixel++) {
       for (let channel = 0; channel < 3; channel++) {
         input[channel * planeSize + pixel] = (rgba[pixel * 4 + channel] / 255 - MEAN[channel]) / STD[channel];

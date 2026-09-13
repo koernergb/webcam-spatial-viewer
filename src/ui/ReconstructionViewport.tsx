@@ -5,7 +5,7 @@ import type { SpatialRenderMode } from "../rendering/MeshRenderer";
 
 export function ReconstructionViewport({ buffers, meshBuffers, intrinsics, pointSize, mode, viewportRef }: {
   buffers: ReconstructionBuffers;
-  meshBuffers: ReconstructionBuffers;
+  meshBuffers: ReconstructionBuffers | null;
   intrinsics: CameraIntrinsics;
   pointSize: number;
   mode: SpatialRenderMode;
@@ -26,7 +26,7 @@ export function ReconstructionViewport({ buffers, meshBuffers, intrinsics, point
     const viewport = viewportRef.current;
     if (!viewport) return;
     viewport.setPointCloud(buffers);
-    viewport.setMesh(meshBuffers);
+    if (meshBuffers) viewport.setMesh(meshBuffers);
     viewport.setSourceIntrinsics(intrinsics);
     viewport.setPointSize(pointSize);
     if (!framed.current) {
