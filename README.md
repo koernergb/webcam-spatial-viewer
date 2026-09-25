@@ -1,11 +1,11 @@
-# Parallax Lab
+# webcam-spatial-viewer
 
 Privacy-preserving browser spatial viewer: webcam or image → on-device monocular
 depth → inspectable point cloud and discontinuity-aware 2.5D mesh.
 
-Parallax Lab runs Depth Anything V2 Small through ONNX Runtime Web using WebGPU
-with a WASM fallback. Frames stay in the browser. The result is **relative,
-single-view geometry**, not metric depth, a complete scan, or SLAM.
+webcam-spatial-viewer runs Depth Anything V2 Small through ONNX Runtime Web using
+WebGPU with a WASM fallback. Frames stay in the browser. The result is
+**relative, single-view geometry**, not metric depth, a complete scan, or SLAM.
 
 ## Run
 
@@ -64,7 +64,7 @@ once at the Three.js boundary: world X = camera X, world Y = −camera Y, world 
 [`src/geometry/README.md`](src/geometry/README.md).
 
 Depth Anything emits relative proximity, where larger values generally indicate
-nearer surfaces. Parallax Lab robust-normalizes that output and maps it
+nearer surfaces. The app robust-normalizes that output and maps it
 monotonically into a user-controlled positive relative depth range. These values
 are deliberately labeled **relative scene units**.
 
